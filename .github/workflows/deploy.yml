@@ -1,0 +1,52 @@
+name: deploy
+
+on:
+  push:
+    branches: [main]
+    paths-ignore: ["README.md", "docs/**"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Deploy Orders API
+    if: ${{ vars.AWS_DEPLOY_ROLE_ARN != '' && github.ref_name == 'main' }}
+    runs-on: ubuntu-latest
+    # The deploy role trusts only this GitHub environment, limited to main.
+    environment: ${{ vars.ENVIRONMENT }}
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "~1.15"
+          terraform_wrapper: false
+      - name: Tests
+        run: make test
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+      - name: Deploy
+        env:
+          AWS_ACCOUNT_ID: ${{ vars.AWS_ACCOUNT_ID }}
+          AWS_REGION: ${{ vars.AWS_REGION }}
+          STATE_BUCKET: ${{ vars.STATE_BUCKET }}
+          APP_NAME: ${{ vars.APP_NAME }}
+          ENVIRONMENT: ${{ vars.ENVIRONMENT }}
+          APP_VERSION: ${{ github.sha }}
+          AUTO_APPROVE: "1"
+        run: scripts/terraform.sh apply
+      - name: Smoke test
+        run: |
+          url="$(terraform -chdir=terraform/main output -raw api_url)"
+          python3 scripts/smoke_test.py "$url" "${{ github.sha }}"
