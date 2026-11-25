@@ -15,9 +15,11 @@ concurrency:
 
 jobs:
   deploy:
-    name: Deploy Orders API
+    name: Deploy API
     if: ${{ vars.AWS_DEPLOY_ROLE_ARN != '' && github.ref_name == 'main' }}
     runs-on: ubuntu-latest
+    outputs:
+      api_url: ${{ steps.api.outputs.url }}
     # The deploy role trusts only this GitHub environment, limited to main.
     environment: ${{ vars.ENVIRONMENT }}
     permissions:
@@ -46,7 +48,39 @@ jobs:
           APP_VERSION: ${{ github.sha }}
           AUTO_APPROVE: "1"
         run: scripts/terraform.sh apply
+      - name: API URL
+        id: api
+        run: echo "url=$(terraform -chdir=terraform/main output -raw api_url)" >> "$GITHUB_OUTPUT"
       - name: Smoke test
+        env:
+          API_URL: ${{ steps.api.outputs.url }}
+          OWNER: ${{ github.repository_owner }}
         run: |
-          url="$(terraform -chdir=terraform/main output -raw api_url)"
-          python3 scripts/smoke_test.py "$url" "${{ github.sha }}"
+          origin="https://$(tr '[:upper:]' '[:lower:]' <<< "$OWNER").github.io"
+          python3 scripts/smoke_test.py "$API_URL" "${{ github.sha }}" "$origin"
+
+  pages:
+    name: Publish the game on GitHub Pages
+    needs: deploy
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Point the game at the deployed API
+        env:
+          API_URL: ${{ needs.deploy.outputs.api_url }}
+        run: |
+          printf 'window.STARFALL_CONFIG = { apiUrl: "%s" };\n' "$API_URL" > web/config.js
+          cat web/config.js
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: web
+      - id: deployment
+        uses: actions/deploy-pages@v4

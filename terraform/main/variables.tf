@@ -30,6 +30,12 @@ variable "alarm_prefix" {
   default     = "symptom-"
 }
 
+variable "web_origins" {
+  type        = list(string)
+  description = "Browser origins allowed to call the API (CORS): the GitHub Pages site of the game, and localhost for development."
+  default     = ["http://localhost:8080"]
+}
+
 variable "traffic_enabled" {
   type        = bool
   description = "Run the synthetic traffic generator (one journey per minute)."

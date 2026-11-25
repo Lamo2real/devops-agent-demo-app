@@ -4,7 +4,7 @@
 # so main changes only through pull requests with passing tests.
 set -euo pipefail
 : "${AWS_ACCOUNT_ID:?}" "${AWS_REGION:?}" "${STATE_BUCKET:?}" "${GITHUB_REPOSITORY:?}"
-APP_NAME="${APP_NAME:-orders-api}"; ENVIRONMENT="${ENVIRONMENT:-lab}"; BRANCH="${BRANCH:-main}"
+APP_NAME="${APP_NAME:-starfall}"; ENVIRONMENT="${ENVIRONMENT:-lab}"; BRANCH="${BRANCH:-main}"
 repo="$GITHUB_REPOSITORY"; prefix="$APP_NAME-$ENVIRONMENT"
 
 gh api -X PUT "repos/$repo/environments/$ENVIRONMENT" --input - >/dev/null <<JSON
@@ -16,6 +16,13 @@ while read -r id name; do
   gh api -X DELETE "repos/$repo/environments/$ENVIRONMENT/deployment-branch-policies/$id" >/dev/null
 done <<< "$existing"
 grep -q " $BRANCH$" <<< "$existing" || gh api -X POST "repos/$repo/environments/$ENVIRONMENT/deployment-branch-policies" -f name="$BRANCH" -f type=branch >/dev/null
+
+# GitHub Pages publishes the game from the deploy workflow (source: GitHub Actions).
+if gh api "repos/$repo/pages" >/dev/null 2>&1; then
+  gh api -X PUT "repos/$repo/pages" -f build_type=workflow >/dev/null || true
+else
+  gh api -X POST "repos/$repo/pages" -f build_type=workflow >/dev/null
+fi
 
 gh variable set AWS_DEPLOY_ROLE_ARN --repo "$repo" --body "arn:aws:iam::$AWS_ACCOUNT_ID:role/$prefix-github-deploy"
 gh variable set AWS_PLAN_ROLE_ARN   --repo "$repo" --body "arn:aws:iam::$AWS_ACCOUNT_ID:role/$prefix-github-plan"

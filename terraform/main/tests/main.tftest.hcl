@@ -9,7 +9,7 @@ mock_provider "aws" {
 mock_provider "archive" {}
 
 variables {
-  app_name       = "orders-api"
+  app_name       = "starfall"
   environment    = "lab"
   aws_account_id = "123456789012"
   aws_region     = "eu-north-1"
@@ -18,7 +18,7 @@ variables {
 run "defaults" {
   command = plan
   assert {
-    condition     = aws_iam_role.api.name == "orders-api-lab-fn-api" && aws_iam_role.api.permissions_boundary == "arn:aws:iam::123456789012:policy/orders-api-lab-boundary"
+    condition     = aws_iam_role.api.name == "starfall-lab-fn-api" && aws_iam_role.api.permissions_boundary == "arn:aws:iam::123456789012:policy/starfall-lab-boundary"
     error_message = "Lambda roles need the fn- prefix and the boundary (required by the deploy role)."
   }
   assert {
@@ -36,6 +36,18 @@ run "defaults" {
   assert {
     condition     = aws_apigatewayv2_api.api.protocol_type == "HTTP" && length(aws_apigatewayv2_route.routes) == 3
     error_message = "Three routes expected."
+  }
+  assert {
+    condition     = aws_dynamodb_table.scores.hash_key == "board" && aws_dynamodb_table.scores.range_key == "sort_key"
+    error_message = "Leaderboard keys must match the handler (board, sort_key)."
+  }
+  assert {
+    condition     = aws_lambda_function.api.handler == "starfall_api.handler.handler" && aws_lambda_function.traffic[0].handler == "starfall_api.traffic.handler"
+    error_message = "Handler paths must match the Python package."
+  }
+  assert {
+    condition     = contains(toset(aws_apigatewayv2_api.api.cors_configuration[0].allow_origins), "http://localhost:8080")
+    error_message = "CORS must allow the configured origins."
   }
 }
 
