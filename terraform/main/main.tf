@@ -1,5 +1,6 @@
-# Orders API: API Gateway HTTP API -> Lambda -> DynamoDB, with symptom alarms
-# that start AWS DevOps Agent investigations, and a synthetic traffic generator.
+# Starfall Dodge backend: API Gateway HTTP API -> Lambda -> DynamoDB (leaderboard),
+# with symptom alarms that start AWS DevOps Agent investigations and a
+# synthetic player that keeps traffic flowing.
 
 data "aws_partition" "current" {}
 
@@ -21,13 +22,18 @@ locals {
 
 # --- Data ----------------------------------------------------------------------------
 
-resource "aws_dynamodb_table" "orders" {
-  name         = "${local.prefix}-orders"
+resource "aws_dynamodb_table" "scores" {
+  name         = "${local.prefix}-scores"
   billing_mode = "PAY_PER_REQUEST"
-  hash_key     = "order_id"
+  hash_key     = "board"
+  range_key    = "sort_key"
 
   attribute {
-    name = "order_id"
+    name = "board"
+    type = "S"
+  }
+  attribute {
+    name = "sort_key"
     type = "S"
   }
 
@@ -73,8 +79,8 @@ data "aws_iam_policy_document" "api" {
     resources = ["${aws_cloudwatch_log_group.api.arn}:*"]
   }
   statement {
-    actions   = ["dynamodb:PutItem", "dynamodb:GetItem"]
-    resources = [aws_dynamodb_table.orders.arn]
+    actions   = ["dynamodb:PutItem", "dynamodb:Query"]
+    resources = [aws_dynamodb_table.scores.arn]
   }
 }
 
@@ -86,11 +92,11 @@ resource "aws_iam_role_policy" "api" {
 
 resource "aws_lambda_function" "api" {
   function_name    = local.api_name
-  description      = "Orders API (${var.app_version})"
+  description      = "Starfall Dodge leaderboard API (${var.app_version})"
   role             = aws_iam_role.api.arn
   runtime          = local.runtime
   architectures    = ["arm64"]
-  handler          = "orders_api.handler.handler"
+  handler          = "starfall_api.handler.handler"
   filename         = data.archive_file.app.output_path
   source_code_hash = data.archive_file.app.output_base64sha256
   timeout          = 10
@@ -98,7 +104,7 @@ resource "aws_lambda_function" "api" {
 
   environment {
     variables = {
-      TABLE_NAME  = aws_dynamodb_table.orders.name
+      TABLE_NAME  = aws_dynamodb_table.scores.name
       APP_VERSION = var.app_version
       LOG_LEVEL   = "INFO"
     }
@@ -112,6 +118,14 @@ resource "aws_lambda_function" "api" {
 resource "aws_apigatewayv2_api" "api" {
   name          = local.api_name
   protocol_type = "HTTP"
+
+  # The game runs in the browser on another origin (GitHub Pages).
+  cors_configuration {
+    allow_origins = var.web_origins
+    allow_methods = ["GET", "POST", "OPTIONS"]
+    allow_headers = ["content-type"]
+    max_age       = 3600
+  }
 }
 
 resource "aws_apigatewayv2_integration" "api" {
@@ -123,7 +137,7 @@ resource "aws_apigatewayv2_integration" "api" {
 }
 
 resource "aws_apigatewayv2_route" "routes" {
-  for_each  = toset(["GET /health", "POST /orders", "GET /orders/{order_id}"])
+  for_each  = toset(["GET /health", "POST /scores", "GET /leaderboard"])
   api_id    = aws_apigatewayv2_api.api.id
   route_key = each.value
   target    = "integrations/${aws_apigatewayv2_integration.api.id}"
@@ -183,11 +197,11 @@ resource "aws_iam_role_policy" "traffic" {
 resource "aws_lambda_function" "traffic" {
   count            = var.traffic_enabled ? 1 : 0
   function_name    = local.traffic_name
-  description      = "Synthetic customer journey against the Orders API"
+  description      = "Synthetic player journey against the Starfall Dodge API"
   role             = aws_iam_role.traffic[0].arn
   runtime          = local.runtime
   architectures    = ["arm64"]
-  handler          = "orders_api.traffic.handler"
+  handler          = "starfall_api.traffic.handler"
   filename         = data.archive_file.app.output_path
   source_code_hash = data.archive_file.app.output_base64sha256
   timeout          = 30
@@ -206,7 +220,7 @@ resource "aws_lambda_function" "traffic" {
 resource "aws_cloudwatch_event_rule" "traffic" {
   count               = var.traffic_enabled ? 1 : 0
   name                = "${local.prefix}-traffic"
-  description         = "One synthetic customer journey per minute"
+  description         = "One synthetic player journey per minute"
   schedule_expression = "rate(1 minute)"
 }
 
@@ -231,7 +245,7 @@ resource "aws_lambda_permission" "traffic" {
 
 resource "aws_cloudwatch_metric_alarm" "http_5xx" {
   alarm_name          = "${var.alarm_prefix}${local.prefix}-http-5xx"
-  alarm_description   = "Orders API returns server errors (HTTP 5xx) to customers for 3 minutes in a row. Service: ${local.api_name}. Logs: /aws/lambda/${local.api_name}."
+  alarm_description   = "The leaderboard API returns server errors (HTTP 5xx) to players for 3 minutes in a row. Service: ${local.api_name}. Logs: /aws/lambda/${local.api_name}."
   namespace           = "AWS/ApiGateway"
   metric_name         = "5xx"
   dimensions          = { ApiId = aws_apigatewayv2_api.api.id }
@@ -246,7 +260,7 @@ resource "aws_cloudwatch_metric_alarm" "http_5xx" {
 
 resource "aws_cloudwatch_metric_alarm" "lambda_errors" {
   alarm_name          = "${var.alarm_prefix}${local.prefix}-function-errors"
-  alarm_description   = "The Orders API Lambda throws errors for 3 minutes in a row. Function: ${local.api_name}."
+  alarm_description   = "The leaderboard API Lambda throws errors for 3 minutes in a row. Function: ${local.api_name}."
   namespace           = "AWS/Lambda"
   metric_name         = "Errors"
   dimensions          = { FunctionName = aws_lambda_function.api.function_name }
@@ -261,7 +275,7 @@ resource "aws_cloudwatch_metric_alarm" "lambda_errors" {
 
 resource "aws_cloudwatch_metric_alarm" "latency" {
   alarm_name          = "${var.alarm_prefix}${local.prefix}-slow-responses"
-  alarm_description   = "Orders API p95 latency above 2 seconds for 5 of 5 minutes. Service: ${local.api_name}."
+  alarm_description   = "Leaderboard API p95 latency above 2 seconds for 5 of 5 minutes. Service: ${local.api_name}."
   namespace           = "AWS/ApiGateway"
   metric_name         = "Latency"
   dimensions          = { ApiId = aws_apigatewayv2_api.api.id }
@@ -275,7 +289,7 @@ resource "aws_cloudwatch_metric_alarm" "latency" {
 }
 
 output "api_url" {
-  description = "Base URL of the Orders API."
+  description = "Base URL of the leaderboard API (the game page calls it)."
   value       = aws_apigatewayv2_api.api.api_endpoint
 }
 

@@ -3,11 +3,11 @@
 # Needs AWS credentials for the account (AWS_PROFILE works, also MFA/assume-role)
 # and these variables (see README.md):
 #   AWS_ACCOUNT_ID  AWS_REGION  STATE_BUCKET  GITHUB_REPOSITORY (owner/repo)
-# Optional: APP_NAME (orders-api), ENVIRONMENT (lab), AUTO_APPROVE=1
+# Optional: APP_NAME (starfall), ENVIRONMENT (lab), AUTO_APPROVE=1
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 : "${AWS_ACCOUNT_ID:?set AWS_ACCOUNT_ID}" "${AWS_REGION:?set AWS_REGION}" "${STATE_BUCKET:?set STATE_BUCKET}" "${GITHUB_REPOSITORY:?set GITHUB_REPOSITORY}"
-APP_NAME="${APP_NAME:-orders-api}"; ENVIRONMENT="${ENVIRONMENT:-lab}"
+APP_NAME="${APP_NAME:-starfall}"; ENVIRONMENT="${ENVIRONMENT:-lab}"
 
 # An explicit profile wins over leftover keys; export a plain session for Terraform.
 if [[ -n "${AWS_PROFILE:-}" ]]; then

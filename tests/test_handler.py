@@ -1,23 +1,21 @@
 import json
-import uuid
-from decimal import Decimal
 
 import pytest
 
-from orders_api import handler as h
+from starfall_api import handler as h
 
 
 class FakeTable:
     def __init__(self):
-        self.items = {}
+        self.items = []
 
-    def put_item(self, Item, ConditionExpression=None):
-        assert Item["order_id"] not in self.items
-        self.items[Item["order_id"]] = Item
+    def put_item(self, Item):
+        self.items.append(Item)
 
-    def get_item(self, Key):
-        item = self.items.get(Key["order_id"])
-        return {"Item": item} if item else {}
+    def query(self, KeyConditionExpression, Limit, ScanIndexForward):
+        board = KeyConditionExpression.get_expression()["values"][1]
+        rows = sorted((i for i in self.items if i["board"] == board), key=lambda i: i["sort_key"], reverse=not ScanIndexForward)
+        return {"Items": rows[:Limit]}
 
 
 @pytest.fixture(autouse=True)
@@ -27,12 +25,12 @@ def fake_table(monkeypatch):
     return table
 
 
-def event(route_key, body=None, path=None):
-    evt = {"routeKey": route_key, "requestContext": {"requestId": "req-1", "http": {"method": route_key.split()[0]}}}
+def event(route_key, body=None, query=None):
+    evt = {"routeKey": route_key, "requestContext": {"requestId": "req-1"}}
     if body is not None:
         evt["body"] = body if isinstance(body, str) else json.dumps(body)
-    if path:
-        evt["pathParameters"] = path
+    if query is not None:
+        evt["queryStringParameters"] = query
     return evt
 
 
@@ -40,7 +38,7 @@ def body(response):
     return json.loads(response["body"])
 
 
-VALID = {"customer_id": "c-1", "items": [{"sku": "A", "quantity": 2, "unit_price": 10.5}, {"sku": "B", "quantity": 1, "unit_price": 0.99}]}
+GAME = {"player": "Nova", "score": 420, "duration_ms": 60_000}
 
 
 def test_health():
@@ -48,61 +46,74 @@ def test_health():
     assert r["statusCode"] == 200 and body(r)["status"] == "ok"
 
 
-def test_create_and_get_order(fake_table):
-    r = h.handler(event("POST /orders", VALID))
-    assert r["statusCode"] == 201
-    created = body(r)
-    assert created["total"] == 21.99
-    assert created["status"] == "CREATED"
-    assert uuid.UUID(created["order_id"])
-    stored = fake_table.items[created["order_id"]]
-    assert stored["total"] == Decimal("21.99")
-
-    r = h.handler(event("GET /orders/{order_id}", path={"order_id": created["order_id"]}))
-    assert r["statusCode"] == 200 and body(r)["customer_id"] == "c-1"
+def test_submit_and_leaderboard_order(fake_table):
+    for player, score in [("Ana", 100), ("Bo", 900), ("Cy", 500), ("Di", 500)]:
+        r = h.handler(event("POST /scores", {"player": player, "score": score, "duration_ms": 60_000}))
+        assert r["statusCode"] == 201
+    r = h.handler(event("GET /leaderboard", query={"limit": "3"}))
+    entries = body(r)["entries"]
+    assert [e["player"] for e in entries] == ["Bo", "Cy", "Di"]  # ties: earlier first
+    assert [e["rank"] for e in entries] == [1, 2, 3]
+    assert all(set(e) == {"rank", "player", "score", "created_at"} for e in entries)
 
 
-def test_unknown_order_is_404():
-    r = h.handler(event("GET /orders/{order_id}", path={"order_id": str(uuid.uuid4())}))
-    assert r["statusCode"] == 404
+def test_default_limit_and_empty_board():
+    r = h.handler(event("GET /leaderboard"))
+    assert r["statusCode"] == 200 and body(r) == {"board": "global", "entries": []}
+
+
+def test_synthetic_scores_never_reach_the_global_board(fake_table):
+    h.handler(event("POST /scores", {**GAME, "synthetic": True}))
+    h.handler(event("POST /scores", GAME))
+    assert body(h.handler(event("GET /leaderboard")))["entries"][0]["player"] == "Nova"
+    assert len(body(h.handler(event("GET /leaderboard")))["entries"]) == 1
+    synthetic = body(h.handler(event("GET /leaderboard", query={"board": "synthetic"})))
+    assert synthetic["board"] == "synthetic" and len(synthetic["entries"]) == 1
+
+
+def test_sort_key_orders_by_score(fake_table):
+    h.handler(event("POST /scores", {**GAME, "score": 9}))
+    h.handler(event("POST /scores", {**GAME, "score": 10}))
+    keys = sorted(i["sort_key"] for i in fake_table.items)
+    assert keys[0].startswith("99999990#") and keys[1].startswith("99999991#")
 
 
 @pytest.mark.parametrize("payload,message", [
     (None, "request body is required"),
-    ("{not json", "not valid JSON"),
-    ([], "JSON object"),
-    ({"items": VALID["items"]}, "customer_id"),
-    ({"customer_id": "c", "items": []}, "items must be a list"),
-    ({"customer_id": "c", "items": [{"sku": "A", "quantity": 0, "unit_price": 1}]}, "quantity"),
-    ({"customer_id": "c", "items": [{"sku": "A", "quantity": True, "unit_price": 1}]}, "quantity"),
-    ({"customer_id": "c", "items": [{"sku": "A", "quantity": 1, "unit_price": -1}]}, "unit_price"),
-    ({"customer_id": "c", "items": [{"sku": "A", "quantity": 1, "unit_price": "x"}]}, "unit_price"),
-    ({"customer_id": "c", "items": [{"sku": "", "quantity": 1, "unit_price": 1}]}, "sku"),
-    ({"customer_id": "c", "items": [{"sku": "A", "quantity": 1, "unit_price": "12.5"}]}, "unit_price"),
-    ({"customer_id": "c", "items": [{"sku": "A", "quantity": 1, "unit_price": None}]}, "unit_price"),
-    ('{"customer_id": "c", "items": [{"sku": "A", "quantity": 1, "unit_price": 1e30}]}', "unit_price"),
-    ('{"customer_id": "c", "items": [{"sku": "A", "quantity": 1, "unit_price": 1e999}]}', "unit_price"),
-    ('{"customer_id": "c", "items": [{"sku": "A", "quantity": 1, "unit_price": 1000000.01}]}', "unit_price"),
-    ('{"customer_id": "c", "items": [{"sku": "A", "quantity": 1, "unit_price": NaN}]}', "unit_price"),
-    ('{"customer_id": "c", "items": [{"sku": "A", "quantity": 1, "unit_price": Infinity}]}', "unit_price"),
-    ('{"customer_id": "c", "items": [{"sku": "A", "quantity": 1, "unit_price": ' + "9" * 31 + '}]}', "unit_price"),
-    ('{"customer_id": "c", "items": [{"sku": "A", "quantity": ' + "9" * 5000 + ', "unit_price": 1}]}', "valid JSON"),
+    ("{nope", "not valid JSON"),
+    ("[]", "JSON object"),
+    ('{"player": "A", "score": 1, "duration_ms": 5000, "x": ' + "9" * 5000 + "}", "valid JSON"),
+    ({**GAME, "player": ""}, "player"),
+    ({**GAME, "player": "x" * 17}, "player"),
+    ({**GAME, "player": "<script>"}, "player"),
+    ({**GAME, "player": " lead"}, "player"),
+    ({**GAME, "player": 7}, "player"),
+    ({**GAME, "score": -1}, "score"),
+    ({**GAME, "score": 1_000_001}, "score"),
+    ({**GAME, "score": 1.5}, "score"),
+    ({**GAME, "score": "10"}, "score"),
+    ({**GAME, "score": True}, "score"),
+    ({**GAME, "score": None}, "score"),
+    ({**GAME, "duration_ms": 999}, "duration_ms"),
+    ({**GAME, "duration_ms": 3_600_001}, "duration_ms"),
+    ({**GAME, "duration_ms": "60000"}, "duration_ms"),
+    ({"player": "Nova", "score": 10_000, "duration_ms": 5_000}, "not possible"),
 ])
-def test_validation_errors_are_400(payload, message):
-    r = h.handler(event("POST /orders", payload) if payload is not None else event("POST /orders"))
+def test_invalid_submissions_are_400(payload, message):
+    r = h.handler(event("POST /scores", payload) if payload is not None else event("POST /scores"))
     assert r["statusCode"] == 400
     assert message in body(r)["error"]
 
 
-def test_boundary_prices_are_accepted():
-    for price in ("0", "0.005", "1000000"):
-        payload = '{"customer_id": "c", "items": [{"sku": "A", "quantity": 1, "unit_price": %s}]}' % price
-        assert h.handler(event("POST /orders", payload))["statusCode"] == 201, price
+def test_plausibility_boundary():
+    # 60 points/second plus 100 slack
+    assert h.handler(event("POST /scores", {"player": "A", "score": 400, "duration_ms": 5_000}))["statusCode"] == 201
+    assert h.handler(event("POST /scores", {"player": "A", "score": 401, "duration_ms": 5_000}))["statusCode"] == 400
 
 
-def test_bad_order_id_is_400():
-    r = h.handler(event("GET /orders/{order_id}", path={"order_id": "nope"}))
-    assert r["statusCode"] == 400
+@pytest.mark.parametrize("query", [{"limit": "0"}, {"limit": "51"}, {"limit": "x"}, {"limit": "-3"}, {"limit": "1.5"}, {"board": "other"}])
+def test_bad_leaderboard_queries_are_400(query):
+    assert h.handler(event("GET /leaderboard", query=query))["statusCode"] == 400
 
 
 def test_unexpected_error_is_500_and_logged(monkeypatch, caplog):
@@ -111,10 +122,10 @@ def test_unexpected_error_is_500_and_logged(monkeypatch, caplog):
             raise RuntimeError("dynamodb down")
 
     monkeypatch.setattr(h, "_TABLE", Broken())
-    r = h.handler(event("POST /orders", VALID))
+    r = h.handler(event("POST /scores", GAME))
     assert r["statusCode"] == 500 and body(r)["request_id"] == "req-1"
     assert "unhandled error" in caplog.text
 
 
 def test_unknown_route_is_404():
-    assert h.handler(event("DELETE /orders"))["statusCode"] == 404
+    assert h.handler(event("DELETE /scores"))["statusCode"] == 404

@@ -1,8 +1,9 @@
-"""Synthetic traffic: one customer journey per invocation (every minute).
+"""Synthetic players: one journey per invocation (every minute).
 
-GET /health, POST /orders, GET /orders/{id}. It gives the API steady traffic
-so the symptom alarms have data and a broken deployment shows up within
-minutes. It never raises: failures are what the API alarms are for.
+GET /health, POST /scores (synthetic board), GET /leaderboard (synthetic board).
+It gives the API steady traffic so the symptom alarms have data and a broken
+deployment shows up within minutes. It never raises: failures are what the
+API alarms are for.
 """
 
 from __future__ import annotations
@@ -43,14 +44,11 @@ def handler(event: dict[str, Any], context: Any = None) -> dict[str, Any]:
     results: dict[str, int] = {}
 
     results["health"], _ = call("GET", f"{base}/health")
-    status, order = call("POST", f"{base}/orders", {
-        "customer_id": "synthetic-traffic",
-        "items": [{"sku": "SKU-STARTER-KIT", "quantity": 2, "unit_price": 149.5}],
+    results["submit"], _ = call("POST", f"{base}/scores", {
+        "player": "synthetic-player", "score": 120, "duration_ms": 30_000, "synthetic": True,
     })
-    results["create"] = status
-    if status == 201 and order.get("order_id"):
-        results["get"], _ = call("GET", f"{base}/orders/{order['order_id']}")
+    results["leaderboard"], _ = call("GET", f"{base}/leaderboard?board=synthetic&limit=5")
 
-    ok = results.get("health") == 200 and results.get("create") == 201 and results.get("get") == 200
+    ok = results["health"] == 200 and results["submit"] == 201 and results["leaderboard"] == 200
     LOG.info(json.dumps({"msg": "synthetic journey", "ok": ok, "results": results}))
     return {"ok": ok, "results": results}

@@ -53,8 +53,8 @@ data "aws_iam_policy_document" "boundary" {
     resources = ["arn:${local.partition}:logs:${var.aws_region}:${local.account}:log-group:/aws/lambda/${local.prefix}-*:*"]
   }
   statement {
-    sid       = "Orders"
-    actions   = ["dynamodb:PutItem", "dynamodb:GetItem"]
+    sid       = "Scores"
+    actions   = ["dynamodb:PutItem", "dynamodb:Query"]
     resources = [local.table_arn_glob]
   }
 }
