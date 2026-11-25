@@ -14,7 +14,7 @@ $(STAMP): requirements-dev.txt
 
 test: $(STAMP) ## Unit tests, Terraform fmt/validate/mock tests (no AWS needed)
 	AWS_DEFAULT_REGION=eu-north-1 TABLE_NAME=test $(PY) -m pytest -q
-	@if command -v node >/dev/null; then node --test web/tests/ ; else echo "node not installed, game tests skipped"; fi
+	@if command -v node >/dev/null; then node --test web/tests/*.test.js ; else echo "node not installed, game tests skipped"; fi
 	terraform fmt -check -recursive terraform
 	@for stack in main bootstrap; do \
 	  echo "terraform $$stack: init, validate, test"; \
